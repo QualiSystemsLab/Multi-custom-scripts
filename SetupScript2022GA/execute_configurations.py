@@ -9,7 +9,7 @@ import json
 
 from cloudshell.api.cloudshell_api import ReservationAppResource, AppConfigurationData, ConfigurationManagementData, ConfigParam, SandboxDataKeyValue
 from cloudshell.workflow.orchestration.setup.default_setup_logic import DefaultSetupLogic
-import concurrent.futures
+
 from multiprocessing.pool import ThreadPool
 
 
@@ -44,14 +44,16 @@ def map_app_inputs(sandbox, mapping) -> Dict[str, List[AppConfigurationData]]:
 
     for app_name, app_details in sandbox.components.apps.items():
         if app_details.app_request.app_resource is None:
-            # App wasn't already deployed & configure
+            # App wasn't already deployed
             continue
         resource_name = app_details.deployed_app.Name
         configurations[resource_name] = []
+        sandbox.logger.info(f"Adding Resource: '{app_name}' to App configuration")
 
         for config_management in app_details.app_request.app_resource.AppConfigurationManagements:
-            sandbox.logger.info(f"Adding Resource: '{app_name}' to App configuration")
+
             inputs = config_management.ScriptParameters
+            connection_method = config_management.ConnectionMethod
             config_name = config_management.Alias
             new_inputs = []
             # update inputs with new values based on mapping dict
@@ -143,8 +145,17 @@ def wait_for_health_check(sandbox, resource, timeout, delay, port):
         sandbox.logger.error(msg)
         raise Exception(msg)
 
+def find_resource_command(resource,sandbox,command_name):
 
-def configure_apps_with_reboot_healthcheck(resource,sandbox,configurations):
+    commands = sandbox.automation_api.GetResourceCommands(resource).Commands
+    for command in commands:
+        if command.Name == command_name:
+            sandbox.logger.info(f"found command {command_name}")
+            return True
+
+    return False
+
+def configure_app_with_reboot_healthcheck(resource,sandbox,configurations):
     """
     :param Resource:
     :param Sandbox sandbox:
@@ -158,35 +169,49 @@ def configure_apps_with_reboot_healthcheck(resource,sandbox,configurations):
         resource_app_configs = configurations.get(resource, None)
     except:
         sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id,
-                                                               f"invalid resource {resource.Name}")
+                                                               f"invalid resource {resource}")
         raise
     #Running all configuration of this resource
     for app_config in resource_app_configs:
         config_fail = True
         count = 0
+        commandInputs = []
         timeout_health_check = 120
         port = 9999
-
-        sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id,
-                    f"running configuration {app_config.ConfigurationManagementDatas[0].Alias}")
 
         while config_fail:
             try:
                 count += 1
-                #Running configuration now!!!
-                DefaultSetupLogic.configure_apps(api=sandbox.automation_api, reservation_id=sandbox.id, logger=sandbox.logger,
-                                         appConfigurationsData=app_config)
+
                 sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id,
-                    f"ran configuration!! {app_config.ConfigurationManagementDatas[0].Alias}")
+                       f"check connectivity to VM {resource}")
+
+                #Checking connectivity to VM!!
+                if find_resource_command(resource,sandbox,"Winrm_health_check"):
+                    sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id, "check winrm")
+                    sandbox.automation_api.ExecuteCommand(sandbox.id, resource, 'Resource', "Winrm_health_check",
+                               commandInputs, printOutput=True)
+
+
+                elif find_resource_command(resource,sandbox,"SSH_health_check"):
+                    sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id, "check ssh")
+                    sandbox.automation_api.ExecuteCommand(sandbox.id,resource,'Resource', "SSH_health_check",
+                                                          commandInputs, printOutput=True)
+
 
                 config_fail = False
             except:
                 if count<5:
                     time.sleep(60)
-                    sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id, f"Retry...")
+                    sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id, f"Retry test connectivity...")
                 else:
-                    raise ValueError("Failed to run configuration")
+                    raise ValueError("Failed to run connectivity health_check")
 
+        sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id,
+                                                               f"running configuration {app_config.ConfigurationManagementDatas[0].Alias}")
+
+        DefaultSetupLogic.configure_apps(api=sandbox.automation_api, reservation_id=sandbox.id, logger=sandbox.logger,
+                                         appConfigurationsData=app_config)
         reboot = False
         health_check = False
 
@@ -259,7 +284,7 @@ def run_config_mgmt_parallel(configurations,configure_priority, sandbox):
 
         try:
             pool = ThreadPool(len(resources_to_configure))
-            async_results = [pool.apply_async(configure_apps_with_reboot_healthcheck, (resource,sandbox,configurations))
+            async_results = [pool.apply_async(configure_app_with_reboot_healthcheck, (resource,sandbox,configurations))
                              for resource in resources_to_configure]
 
             pool.close()
@@ -300,6 +325,7 @@ def calculate_priority(resources, sandbox) -> Dict[int, List[str]]:
                     priority = int(priority_att.Value)
                     sandbox.logger.info(f"App resource: '{resource.Name}' has priority value of: {priority_att.Value}")
                 except:
+                    #To do- take default instead of exception and write the right msg
                     sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id, f"Invalid priority value in app {resource.Name}")
                     raise
             else:
