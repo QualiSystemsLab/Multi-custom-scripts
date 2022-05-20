@@ -1,0 +1,42 @@
+spec_version: 1
+kind: application
+
+# This VM will auto power off 5 minutes after deployment.
+
+inputs:
+  - SANDBOX_ID:
+  - LOCATION:
+  - GitHubURL:
+  - GitToken:
+  - MainFileName:
+  - GitBranch:
+  - VMSize:
+  - echo_input:
+
+source:
+  os_type: linux
+  image:
+    azure_image:
+      - urn: RedHat:RHEL:7-LVM:latest
+        username: Azdbadmin
+        password: Welcome1234567+
+
+infrastructure:
+  connectivity:
+  compute:
+    spec:
+      azure:
+        vm_size: $VMSize 
+
+configuration:  
+  initialization:
+    script: linux_git_script.sh #init.sh
+  # start:
+  #   script: linux_git_script.sh
+  healthcheck:
+    # script: start.sh
+    wait_for_ports: ALL
+    timeout: 6500
+
+debugging:
+  connection_protocol: SSH
