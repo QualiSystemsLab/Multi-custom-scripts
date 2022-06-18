@@ -17,7 +17,7 @@ from multiprocessing.pool import ThreadPool
 
 def run_script_execution(sandbox, maps):
     """
-    :param Sandbox sandbox:
+    :param Sandbox sandbox: name:val
     :param dict mapping:
     """
     #create new configurations dict with the new inputs
@@ -32,6 +32,37 @@ def run_script_execution(sandbox, maps):
 
     # Run apps by priority
     run_config_mgmt_parallel(configurations, configure_priority, sandbox)
+
+def combine_lists_to_dict(sandbox, scripts, inputs, mapping,app_name,config_name):
+
+    # adding all inputs to new dict - both the changed inputs and the ones that didn't changed
+    # as we are going to use the new configuration dictionary
+    combined_Dict = {}
+    sandbox.logger.info(" combine_lists_to_dict ")
+    try:
+        for script_input in inputs:
+            sandbox.logger.info(f"script_input: '{script_input.Name}'")
+            input_name = script_input.Name
+            input_value = script_input.Value
+
+            if input_name in mapping:
+                sandbox.logger.info(f"Resource: '{app_name}' App Config Name: '{config_name}' "
+                                    f"Input name: '{input_name}' has new value from mapping")
+                input_value = mapping[input_name]
+
+            combined_Dict[input_name] = input_value
+
+        for configParam in scripts:
+            sandbox.logger.info(f"configParam.Name: '{configParam.Name}'")
+            combined_Dict[configParam.Name] = configParam.Value
+
+    except:
+        sandbox.logger.exception("Failed to combined")
+        raise
+
+    return combined_Dict
+
+
 
 def map_app_inputs(sandbox, mapping) -> Dict[str, List[AppConfigurationData]]:
     """
@@ -51,24 +82,32 @@ def map_app_inputs(sandbox, mapping) -> Dict[str, List[AppConfigurationData]]:
         sandbox.logger.info(f"Adding Resource: '{app_name}' to App configuration")
 
         for config_management in app_details.app_request.app_resource.AppConfigurationManagements:
-
             inputs = config_management.ScriptParameters
             connection_method = config_management.ConnectionMethod
             config_name = config_management.Alias
-            new_inputs = []
-            # update inputs with new values based on mapping dict
-            for script_input in inputs:
-                input_name = script_input.Name
-                input_value = script_input.Value
 
-                if input_name in mapping:
-                    sandbox.logger.info(f"Resource: '{app_name}' App Config Name: '{config_name}' "
-                                        f"Input name: '{input_name}' has new value from mapping")
-                    input_value = mapping[input_name]
+            sandbox.logger.info(f"config name: '{config_name}' ")
+            script_new_configs = {}
 
-                #adding all inputs to new dict - both the changed inputs and the ones that didn't changed
-                #as we are going to use the new configuration dictionary
-                new_inputs.append(ConfigParam(input_name, input_value))
+            for conf_name in app_details.app_request.scripts.keys():
+                sandbox.logger.info(f"conf_name: '{conf_name}' ")
+
+            if config_name in app_details.app_request.scripts:
+                sandbox.logger.info(" check scripts inputs as well ")
+                """ check scripts inputs as well """
+                ScriptRequestInfo = app_details.app_request.scripts[config_name]
+                script_new_configs = ScriptRequestInfo.script_configuration
+
+            new_inputs =[]
+            comb_dict = combine_lists_to_dict(sandbox,script_new_configs, inputs, mapping,app_name,config_name)
+
+            try:
+
+                for key,val in comb_dict.items():
+                    new_inputs.append(ConfigParam(key, val))
+            except:
+                sandbox.logger.exception("Failed to build input list")
+                raise
 
             config_data = ConfigurationManagementData(config_name, new_inputs)
             configurations[resource_name].append(AppConfigurationData(resource_name, [config_data]))
@@ -94,7 +133,7 @@ def reboot_vm(sandbox, resource_name):
     except:
         sandbox.logger.exception("Failed to reboot VM")
         sandbox.automation_api.WriteMessageToReservationOutput(sandbox.id,
-                                                               f"Failed to reboot VM {resource.Name}")
+                                                               f"Failed to reboot VM {resource_name}")
         raise
 
 
